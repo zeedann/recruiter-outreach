@@ -1,6 +1,9 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from html import escape as html_escape
+
+from app.sanitize import sanitize_html
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -10,11 +13,16 @@ from app.models import (
     Candidate,
     CandidateStateLog,
     CandidateStatus,
+    Recruiter,
+    Referral,
+    Reply,
     SentEmail,
     Sequence,
     SequenceStep,
 )
+from app.services.classifier import classify_reply
 from app.services.nylas_service import nylas_service
+from app.services.referral import handle_referral
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +54,7 @@ def _update_status(db, candidate: Candidate, new_status: CandidateStatus, note: 
 
 async def process_candidates():
     async with async_session() as db:
-        # Get all pending candidates -> activate them
-        result = await db.execute(
-            select(Candidate).where(Candidate.status == CandidateStatus.pending)
-        )
-        pending = result.scalars().all()
-        for c in pending:
-            _update_status(db, c, CandidateStatus.active, "Enrolled in sequence")
-        if pending:
-            await db.commit()
-
+        # Only process already-active candidates (activation is manual via API)
         # Get all active candidates
         result = await db.execute(
             select(Candidate)
@@ -108,11 +107,38 @@ async def process_candidates():
                 continue
 
             try:
+                template_vars = {
+                    "name": candidate.name or candidate.email.split("@")[0],
+                    "email": candidate.email,
+                    "company": "",
+                }
+
+                # For referral sequences, resolve {{referrer_name}} from the referral record
+                ref_result = await db.execute(
+                    select(Referral).where(Referral.new_candidate_id == candidate.id)
+                )
+                referral = ref_result.scalar_one_or_none()
+                if referral:
+                    from_result = await db.execute(
+                        select(Candidate).where(Candidate.id == referral.from_candidate_id)
+                    )
+                    from_cand = from_result.scalar_one_or_none()
+                    template_vars["referrer_name"] = (
+                        from_cand.name if from_cand and from_cand.name else referral.referred_name or "Someone"
+                    )
+
+                subject = current_step.subject
+                body = current_step.body_html
+                for key, val in template_vars.items():
+                    safe_val = html_escape(val)
+                    subject = subject.replace("{{" + key + "}}", val)  # subject is plain text
+                    body = body.replace("{{" + key + "}}", safe_val)   # body is HTML, escape
+
                 resp = await nylas_service.send_email(
                     grant_id=grant_id,
                     to_email=candidate.email,
-                    subject=current_step.subject,
-                    body_html=current_step.body_html,
+                    subject=subject,
+                    body_html=body,
                 )
                 msg_id = resp.get("data", resp).get("id")
                 sent = SentEmail(
@@ -128,11 +154,122 @@ async def process_candidates():
         await db.commit()
 
 
+async def poll_replies():
+    """Poll Nylas for new inbound messages and match them to active candidates."""
+    async with async_session() as db:
+        # Get all recruiters
+        result = await db.execute(select(Recruiter))
+        recruiters = result.scalars().all()
+
+        for recruiter in recruiters:
+            # Check messages from the last 2 minutes
+            since = int((datetime.utcnow() - timedelta(minutes=2)).timestamp())
+            try:
+                messages = await nylas_service.list_recent_messages(
+                    grant_id=recruiter.nylas_grant_id,
+                    received_after=since,
+                )
+            except Exception as e:
+                logger.error(f"Failed to poll messages for {recruiter.email}: {e}")
+                continue
+
+            for msg in messages:
+                from_list = msg.get("from", [])
+                if not from_list:
+                    continue
+                sender_email = from_list[0].get("email", "") if isinstance(from_list[0], dict) else str(from_list[0])
+                msg_id = msg.get("id", "")
+
+                # Skip if sender is the recruiter themselves
+                if sender_email == recruiter.email:
+                    continue
+
+                # Find active candidate matching this sender
+                result = await db.execute(
+                    select(Candidate).where(
+                        Candidate.email == sender_email,
+                        Candidate.status.in_([
+                            CandidateStatus.active,
+                            CandidateStatus.pending,
+                        ]),
+                    )
+                )
+                candidate = result.scalar_one_or_none()
+                if not candidate:
+                    continue
+
+                # Check if we already captured this message
+                existing = await db.execute(
+                    select(Reply).where(Reply.nylas_message_id == msg_id)
+                )
+                if existing.scalar_one_or_none():
+                    continue
+
+                # Store reply
+                reply_body = msg.get("body", msg.get("snippet", ""))
+                reply = Reply(
+                    candidate_id=candidate.id,
+                    nylas_message_id=msg_id,
+                    body=sanitize_html(reply_body),
+                )
+                db.add(reply)
+
+                old_status = candidate.status
+                candidate.status = CandidateStatus.replied
+                db.add(CandidateStateLog(
+                    candidate_id=candidate.id,
+                    from_status=old_status,
+                    to_status=CandidateStatus.replied,
+                    note="Candidate replied",
+                ))
+                await db.flush()
+
+                logger.info(f"Captured reply from {sender_email}")
+
+                # Classify
+                try:
+                    classification = await classify_reply(reply_body)
+                    reply.classification = classification.get("classification", "neutral")
+
+                    status_map = {
+                        "interested": CandidateStatus.interested,
+                        "not_interested": CandidateStatus.not_interested,
+                        "neutral": CandidateStatus.neutral,
+                        "referral": CandidateStatus.neutral,
+                    }
+                    new_status = status_map.get(reply.classification, CandidateStatus.neutral)
+                    candidate.status = new_status
+                    db.add(CandidateStateLog(
+                        candidate_id=candidate.id,
+                        from_status=CandidateStatus.replied,
+                        to_status=new_status,
+                        note=f"Classified as {reply.classification}",
+                    ))
+
+                    # Handle referral
+                    if classification.get("has_referral") and classification.get("referral_email"):
+                        await handle_referral(
+                            db=db,
+                            from_candidate=candidate,
+                            referred_email=classification["referral_email"],
+                            referred_name=classification.get("referral_name"),
+                        )
+                except Exception as e:
+                    logger.error(f"Classification failed for {sender_email}: {e}")
+                    reply.classification = "neutral"
+
+        await db.commit()
+
+
 async def run_sequence_engine():
-    logger.info("Sequence engine started")
+    logger.info("Sequence engine started (with reply polling)")
     while True:
         try:
             await process_candidates()
         except Exception as e:
             logger.error(f"Sequence engine error: {e}")
+        try:
+            await poll_replies()
+        except Exception as e:
+            logger.error(f"Reply polling error: {e}")
         await asyncio.sleep(30)  # Check every 30 seconds

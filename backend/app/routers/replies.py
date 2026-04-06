@@ -3,7 +3,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.auth import get_current_recruiter, verify_candidate_ownership
 from app.database import get_db
+from app.sanitize import sanitize_html
 from app.models import Candidate, Recruiter, Reply, Sequence
 from app.schemas import ReplyOut, ReplySend
 from app.services.nylas_service import nylas_service
@@ -12,7 +14,13 @@ router = APIRouter(prefix="/api/replies", tags=["replies"])
 
 
 @router.get("/candidate/{candidate_id}", response_model=list[ReplyOut])
-async def list_replies(candidate_id: int, db: AsyncSession = Depends(get_db)):
+async def list_replies(
+    candidate_id: int,
+    recruiter: Recruiter = Depends(get_current_recruiter),
+    db: AsyncSession = Depends(get_db),
+):
+    await verify_candidate_ownership(candidate_id, recruiter, db)
+
     result = await db.execute(
         select(Reply)
         .where(Reply.candidate_id == candidate_id)
@@ -25,27 +33,20 @@ async def list_replies(candidate_id: int, db: AsyncSession = Depends(get_db)):
 async def send_reply(
     candidate_id: int,
     data: ReplySend,
+    recruiter: Recruiter = Depends(get_current_recruiter),
     db: AsyncSession = Depends(get_db),
 ):
+    await verify_candidate_ownership(candidate_id, recruiter, db)
+
     result = await db.execute(
         select(Candidate)
         .options(selectinload(Candidate.replies))
         .where(Candidate.id == candidate_id)
     )
-    candidate = result.scalar_one_or_none()
-    if not candidate:
-        raise HTTPException(404, "Candidate not found")
+    candidate = result.scalar_one()
 
-    # Get recruiter grant_id
-    seq_result = await db.execute(
-        select(Sequence)
-        .options(selectinload(Sequence.recruiter))
-        .where(Sequence.id == candidate.sequence_id)
-    )
-    sequence = seq_result.scalar_one()
-    grant_id = sequence.recruiter.nylas_grant_id
+    grant_id = recruiter.nylas_grant_id
 
-    # Find last reply message_id to thread properly
     last_reply = None
     if candidate.replies:
         last_reply = max(candidate.replies, key=lambda r: r.received_at)
@@ -60,7 +61,7 @@ async def send_reply(
         resp = await nylas_service.send_email(
             grant_id=grant_id,
             to_email=candidate.email,
-            subject=f"Re: Following up",
+            subject="Re: Following up",
             body_html=data.body,
         )
 
@@ -68,7 +69,7 @@ async def send_reply(
     reply = Reply(
         candidate_id=candidate_id,
         nylas_message_id=msg_data.get("id"),
-        body=data.body,
+        body=sanitize_html(data.body),
         classification="recruiter_reply",
     )
     db.add(reply)

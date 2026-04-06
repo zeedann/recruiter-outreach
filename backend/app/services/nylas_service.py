@@ -1,13 +1,20 @@
+import logging
+
 import httpx
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class NylasService:
     def __init__(self):
         self.api_uri = settings.nylas_api_uri
-        self.api_key = settings.nylas_api_key
         self.client_id = settings.nylas_client_id
+
+    @property
+    def api_key(self):
+        return settings.nylas_api_key
 
     def _headers(self):
         return {
@@ -22,6 +29,8 @@ class NylasService:
             "redirect_uri": redirect_uri,
             "response_type": "code",
             "access_type": "online",
+            "provider": "google",
+            "scope": "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile",
         }
         query = "&".join(f"{k}={v}" for k, v in params.items())
         return f"{self.api_uri}/v3/connect/auth?{query}"
@@ -54,6 +63,8 @@ class NylasService:
                     "to": [{"email": to_email}],
                 },
             )
+            if resp.status_code >= 400:
+                logger.error(f"Nylas send error {resp.status_code}: {resp.text}")
             resp.raise_for_status()
             return resp.json()
 
@@ -101,6 +112,25 @@ class NylasService:
             resp.raise_for_status()
             data = resp.json()
             return data.get("data", data)
+
+    async def list_recent_messages(
+        self, grant_id: str, received_after: int, limit: int = 50
+    ) -> list[dict]:
+        """List messages received after a given unix timestamp."""
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{self.api_uri}/v3/grants/{grant_id}/messages",
+                headers=self._headers(),
+                params={
+                    "received_after": received_after,
+                    "limit": limit,
+                },
+            )
+            if resp.status_code >= 400:
+                logger.error(f"Nylas list messages error {resp.status_code}: {resp.text}")
+                return []
+            data = resp.json()
+            return data.get("data", [])
 
 
 nylas_service = NylasService()

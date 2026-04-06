@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import api from "../api";
+import { Send, MessageSquare, ArrowRight, Clock } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
 import StatusBadge from "../components/StatusBadge";
+import { sanitizeHtml } from "@/lib/sanitize";
+import api from "../api";
 
 interface CandidateData {
   id: number;
@@ -60,7 +67,6 @@ export default function CandidateDetail() {
   const [sending, setSending] = useState(false);
 
   const load = () => api.get(`/candidates/${id}`).then((r) => setDetail(r.data));
-
   useEffect(() => { load(); }, [id]);
 
   const sendReply = async () => {
@@ -72,128 +78,159 @@ export default function CandidateDetail() {
     load();
   };
 
-  if (!detail) return <p>Loading...</p>;
+  if (!detail) return <div className="flex items-center justify-center h-64 text-muted-foreground">Loading...</div>;
 
   const { candidate: c, state_logs, sent_emails, replies, referrals } = detail;
 
   return (
-    <div>
-      <h1 style={{ fontSize: 24, marginBottom: 4 }}>{c.name || c.email}</h1>
-      <p style={{ color: "#666", marginBottom: 4, fontSize: 14 }}>{c.email}</p>
-      <div style={{ marginBottom: 24 }}>
-        <StatusBadge status={c.status} />
-        <span style={{ fontSize: 12, color: "#888", marginLeft: 12 }}>
-          Step {c.current_step + 1} &middot; Enrolled {new Date(c.enrolled_at).toLocaleString()}
-        </span>
+    <div className="space-y-6">
+      {/* Header */}
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">{c.name || c.email}</h1>
+        <p className="text-muted-foreground mt-1">{c.email}</p>
+        <div className="flex items-center gap-3 mt-3">
+          <StatusBadge status={c.status} />
+          <span className="text-sm text-muted-foreground flex items-center gap-1">
+            <Clock className="h-3.5 w-3.5" />
+            Step {c.current_step + 1}
+          </span>
+          <span className="text-sm text-muted-foreground">
+            Enrolled {new Date(c.enrolled_at).toLocaleString()}
+          </span>
+        </div>
       </div>
 
-      {/* Sent Emails */}
-      <section style={{ marginBottom: 24 }}>
-        <h2 style={h2}>Sent Emails ({sent_emails.length})</h2>
-        {sent_emails.map((e) => (
-          <div key={e.id} style={{ ...card, marginBottom: 6 }}>
-            <span style={{ fontSize: 13 }}>Step {e.step_id}</span>
-            <span style={{ fontSize: 12, color: "#888", marginLeft: 12 }}>
-              {new Date(e.sent_at).toLocaleString()}
-            </span>
-          </div>
-        ))}
-      </section>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Conversation */}
+        <div className="lg:col-span-2 space-y-4">
+          {/* Sent Emails */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Send className="h-4 w-4" />
+                Sent Emails ({sent_emails.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {sent_emails.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No emails sent yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {sent_emails.map((e) => (
+                    <div key={e.id} className="flex items-center justify-between py-2 border-b last:border-0">
+                      <span className="text-sm">Step {e.step_id}</span>
+                      <span className="text-xs text-muted-foreground">{new Date(e.sent_at).toLocaleString()}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
-      {/* Replies / Thread */}
-      <section style={{ marginBottom: 24 }}>
-        <h2 style={h2}>Conversation ({replies.length})</h2>
-        {replies.map((r) => (
-          <div
-            key={r.id}
-            style={{
-              ...card,
-              marginBottom: 8,
-              borderLeft: r.classification === "recruiter_reply"
-                ? "3px solid #4f46e5"
-                : "3px solid #16a34a",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-              <span style={{ fontSize: 12, fontWeight: 600, color: r.classification === "recruiter_reply" ? "#4f46e5" : "#16a34a" }}>
-                {r.classification === "recruiter_reply" ? "You" : "Candidate"}
-              </span>
-              <span style={{ fontSize: 12, color: "#888" }}>
-                {new Date(r.received_at).toLocaleString()}
-              </span>
-            </div>
-            <div style={{ fontSize: 14 }} dangerouslySetInnerHTML={{ __html: r.body }} />
-            {r.classification && r.classification !== "recruiter_reply" && (
-              <div style={{ marginTop: 6 }}>
-                <StatusBadge status={r.classification} />
+          {/* Conversation Thread */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <MessageSquare className="h-4 w-4" />
+                Conversation ({replies.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {replies.map((r) => {
+                const isRecruiter = r.classification === "recruiter_reply";
+                return (
+                  <div
+                    key={r.id}
+                    className={`p-3 rounded-lg border-l-4 ${
+                      isRecruiter ? "border-l-indigo-500 bg-indigo-50/50" : "border-l-emerald-500 bg-emerald-50/50"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <Badge variant={isRecruiter ? "default" : "success"} className="text-xs">
+                        {isRecruiter ? "You" : "Candidate"}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">{new Date(r.received_at).toLocaleString()}</span>
+                    </div>
+                    <div className="text-sm" dangerouslySetInnerHTML={{ __html: sanitizeHtml(r.body) }} />
+                    {r.classification && !isRecruiter && (
+                      <div className="mt-2">
+                        <StatusBadge status={r.classification} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              <Separator />
+
+              <div className="space-y-3">
+                <Textarea
+                  placeholder="Type your reply..."
+                  value={replyBody}
+                  onChange={(e) => setReplyBody(e.target.value)}
+                />
+                <Button onClick={sendReply} disabled={sending}>
+                  <Send className="h-4 w-4 mr-1" />
+                  {sending ? "Sending..." : "Send Reply"}
+                </Button>
               </div>
-            )}
-          </div>
-        ))}
-
-        {/* Reply compose */}
-        <div style={{ ...card, marginTop: 12 }}>
-          <textarea
-            placeholder="Type your reply..."
-            value={replyBody}
-            onChange={(e) => setReplyBody(e.target.value)}
-            style={{ ...inputStyle, minHeight: 80, marginBottom: 8 }}
-          />
-          <button onClick={sendReply} disabled={sending} style={btn}>
-            {sending ? "Sending..." : "Send Reply"}
-          </button>
+            </CardContent>
+          </Card>
         </div>
-      </section>
 
-      {/* Referrals */}
-      {referrals.length > 0 && (
-        <section style={{ marginBottom: 24 }}>
-          <h2 style={h2}>Referrals</h2>
-          {referrals.map((ref) => (
-            <div key={ref.id} style={{ ...card, marginBottom: 6 }}>
-              <span style={{ fontWeight: 600 }}>{ref.referred_name || ref.referred_email}</span>
-              <span style={{ fontSize: 13, color: "#666", marginLeft: 8 }}>{ref.referred_email}</span>
-            </div>
-          ))}
-        </section>
-      )}
-
-      {/* State History */}
-      <section>
-        <h2 style={h2}>State History</h2>
-        <div style={card}>
-          {state_logs.length === 0 ? (
-            <p style={{ color: "#888", fontSize: 13 }}>No state transitions yet.</p>
-          ) : (
-            state_logs.map((log) => (
-              <div
-                key={log.id}
-                style={{
-                  display: "flex",
-                  gap: 12,
-                  alignItems: "center",
-                  padding: "6px 0",
-                  borderBottom: "1px solid #f0f0f0",
-                  fontSize: 13,
-                }}
-              >
-                <span style={{ color: "#888", minWidth: 140 }}>
-                  {new Date(log.timestamp).toLocaleString()}
-                </span>
-                <StatusBadge status={log.from_status} />
-                <span>&rarr;</span>
-                <StatusBadge status={log.to_status} />
-                {log.note && <span style={{ color: "#666" }}>{log.note}</span>}
-              </div>
-            ))
+        {/* Sidebar */}
+        <div className="space-y-4">
+          {/* Referrals */}
+          {referrals.length > 0 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Referrals</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {referrals.map((ref) => (
+                  <div key={ref.id} className="py-2 border-b last:border-0">
+                    <p className="font-medium text-sm">{ref.referred_name || ref.referred_email}</p>
+                    <p className="text-xs text-muted-foreground">{ref.referred_email}</p>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
           )}
+
+          {/* State History */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">State History</CardTitle>
+              <CardDescription>Status transitions over time</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {state_logs.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No transitions yet.</p>
+              ) : (
+                <div className="space-y-3">
+                  {state_logs.map((log) => (
+                    <div key={log.id} className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <StatusBadge status={log.from_status} />
+                        <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                        <StatusBadge status={log.to_status} />
+                      </div>
+                      <div className="flex items-center gap-2 ml-1">
+                        <span className="text-xs text-muted-foreground">
+                          {new Date(log.timestamp).toLocaleString()}
+                        </span>
+                        {log.note && (
+                          <span className="text-xs text-muted-foreground">- {log.note}</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
-      </section>
+      </div>
     </div>
   );
 }
-
-const h2: React.CSSProperties = { fontSize: 16, marginBottom: 8, fontWeight: 600 };
-const card: React.CSSProperties = { background: "#fff", borderRadius: 8, padding: 16, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" };
-const inputStyle: React.CSSProperties = { width: "100%", padding: "8px 12px", border: "1px solid #ddd", borderRadius: 6, fontSize: 14 };
-const btn: React.CSSProperties = { background: "#4f46e5", color: "#fff", border: "none", padding: "8px 20px", borderRadius: 6, cursor: "pointer", fontSize: 14, fontWeight: 600 };

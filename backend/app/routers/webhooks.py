@@ -1,10 +1,15 @@
+import hashlib
+import hmac
 import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
+from app.sanitize import sanitize_html
 from app.models import Candidate, CandidateStateLog, CandidateStatus, Reply, SentEmail
 from app.services.classifier import classify_reply
 from app.services.referral import handle_referral
@@ -13,17 +18,40 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 
+# Set this after creating the webhook via the Nylas API
+# The webhook_secret is returned in the create response
+WEBHOOK_SECRET = settings.nylas_api_key  # Fallback; ideally use a dedicated env var
+
+
+def verify_webhook_signature(body: bytes, signature: str | None) -> bool:
+    """Verify the Nylas webhook signature."""
+    if not signature:
+        return False
+    expected = hmac.new(
+        WEBHOOK_SECRET.encode("utf-8"),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
 
 @router.get("/nylas")
 async def nylas_webhook_verify(challenge: str = ""):
-    """Nylas webhook verification - return the challenge parameter."""
-    return challenge
+    """Nylas webhook verification - return the challenge parameter as plain text."""
+    return PlainTextResponse(challenge)
 
 
 @router.post("/nylas")
 async def nylas_webhook(request: Request, db: AsyncSession = Depends(get_db)):
+    raw_body = await request.body()
+
+    # Verify webhook signature
+    signature = request.headers.get("x-nylas-signature")
+    if not verify_webhook_signature(raw_body, signature):
+        logger.warning("Webhook signature verification failed")
+        raise HTTPException(401, "Invalid webhook signature")
+
     body = await request.json()
-    logger.info(f"Webhook received: {body}")
 
     deltas = body.get("data", [])
     if not isinstance(deltas, list):
@@ -32,7 +60,6 @@ async def nylas_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     for delta in deltas:
         obj = delta.get("object_data", delta)
         msg_id = obj.get("id", "")
-        grant_id = delta.get("grant_id", body.get("grant_id", ""))
 
         # Extract sender email
         from_list = obj.get("from", [])
@@ -49,20 +76,14 @@ async def nylas_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         )
         candidate = result.scalar_one_or_none()
         if not candidate:
-            logger.debug(f"No active candidate found for {sender_email}")
             continue
-
-        # Check if this is a reply to one of our sent emails
-        reply_to_ids = obj.get("in_reply_to", [])
-        # Also check thread matching
-        thread_id = obj.get("thread_id", "")
 
         # Store the reply
         reply_body = obj.get("body", obj.get("snippet", ""))
         reply = Reply(
             candidate_id=candidate.id,
             nylas_message_id=msg_id,
-            body=reply_body,
+            body=sanitize_html(reply_body),
         )
         db.add(reply)
 
@@ -85,7 +106,6 @@ async def nylas_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             classification = await classify_reply(reply_body)
             reply.classification = classification.get("classification", "neutral")
 
-            # Map classification to candidate status
             status_map = {
                 "interested": CandidateStatus.interested,
                 "not_interested": CandidateStatus.not_interested,

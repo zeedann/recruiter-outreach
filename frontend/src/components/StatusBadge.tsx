@@ -1,29 +1,21 @@
-const colors: Record<string, { bg: string; text: string }> = {
-  pending: { bg: "#f3f4f6", text: "#6b7280" },
-  active: { bg: "#dbeafe", text: "#2563eb" },
-  replied: { bg: "#fef3c7", text: "#d97706" },
-  interested: { bg: "#dcfce7", text: "#16a34a" },
-  not_interested: { bg: "#fee2e2", text: "#dc2626" },
-  neutral: { bg: "#f3f4f6", text: "#6b7280" },
-  referred: { bg: "#e0e7ff", text: "#4f46e5" },
-  referral: { bg: "#e0e7ff", text: "#4f46e5" },
+import { Badge } from "@/components/ui/badge";
+
+const variantMap: Record<string, "default" | "secondary" | "destructive" | "success" | "warning" | "info" | "outline"> = {
+  pending: "secondary",
+  active: "info",
+  replied: "warning",
+  interested: "success",
+  not_interested: "destructive",
+  neutral: "secondary",
+  referred: "default",
+  referral: "default",
 };
 
 export default function StatusBadge({ status }: { status: string }) {
-  const c = colors[status] || colors.neutral;
+  const variant = variantMap[status] || "secondary";
   return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "2px 8px",
-        borderRadius: 12,
-        fontSize: 12,
-        fontWeight: 600,
-        background: c.bg,
-        color: c.text,
-      }}
-    >
+    <Badge variant={variant}>
       {status.replace(/_/g, " ")}
-    </span>
+    </Badge>
   );
 }

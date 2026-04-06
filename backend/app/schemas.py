@@ -54,9 +54,26 @@ class SequenceListOut(BaseModel):
     recruiter_id: int
     name: str
     created_at: datetime
+    candidate_count: int = 0
+    sent_count: int = 0
+    replied_count: int = 0
+    reply_rate: float = 0.0
 
     class Config:
         from_attributes = True
+
+
+class SequenceUpdate(BaseModel):
+    name: str
+
+
+class ReorderSteps(BaseModel):
+    step_ids: list[int]
+
+
+class BulkAction(BaseModel):
+    candidate_ids: list[int]
+    action: str  # "delete" or a status value
 
 
 # --- Candidate ---
@@ -145,3 +162,54 @@ class CandidateDetail(BaseModel):
     sent_emails: list[SentEmailOut]
     replies: list[ReplyOut]
     referrals: list[ReferralOut] = []
+
+
+# --- Extended Dashboard Analytics ---
+class FunnelData(BaseModel):
+    total_candidates: int
+    emails_sent: int
+    unique_candidates_emailed: int
+    replied: int
+    interested: int
+    reply_rate: float
+    interest_rate: float
+
+
+class DailyActivity(BaseModel):
+    date: str
+    sent: int
+    replied: int
+    interested: int
+
+
+class TimeToReplyStats(BaseModel):
+    avg_minutes: float
+    median_minutes: float
+    p90_minutes: float
+    total_replies: int
+
+
+class StatusDistribution(BaseModel):
+    status: str
+    count: int
+    percentage: float
+
+
+class RecentActivityItem(BaseModel):
+    type: str  # "sent", "reply", "status_change"
+    candidate_email: str
+    candidate_name: str
+    detail: str
+    timestamp: datetime
+    sequence_name: str | None = None
+
+
+class SequenceComparison(BaseModel):
+    sequence_id: int
+    sequence_name: str
+    total_candidates: int
+    emails_sent: int
+    reply_count: int
+    reply_rate: float
+    interested_count: int
+    interest_rate: float
